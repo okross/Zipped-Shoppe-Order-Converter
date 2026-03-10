@@ -18,7 +18,8 @@ COLUMN_MAPPING = {
 }
 
 # 商品排除關鍵字
-EXCLUDE_ITEMS = ["勿拍", "補拍", "補發", "直播下單", "破損鏈接", "破損鏈結", "售後鏈接", "售後鏈結"]
+# 商品排除關鍵字 (已加入 直播台, 直播)
+EXCLUDE_ITEMS = ["勿拍", "補拍", "補發", "直播下單", "破損鏈接", "破損鏈結", "售後鏈接", "售後鏈結", "直播台", "直播"]
 
 # --- 功能函式 ---
 
@@ -175,3 +176,4 @@ if submit:
                 file_name=f"Shopee匯出_{datetime.now().strftime('%Y%m%d')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
+
