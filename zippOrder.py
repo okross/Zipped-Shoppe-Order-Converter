@@ -69,4 +69,109 @@ st.markdown("""
 with st.form("main_form"):
     shop_url = st.text_input("1. 請輸入店鋪網址 (必填)", placeholder="https://shopee.tw/yourshop")
     filter_status = st.checkbox("2. 自動排除退貨/取消訂單", value=True)
-    uploaded_zip = st.file_uploader
+    uploaded_zip = st.file_uploader("3. 上傳 ZIP 壓縮檔", type=["zip"])
+    submit = st.form_submit_button("執行轉換")
+
+if submit:
+    if not shop_url:
+        st.error("請填寫店鋪網址！")
+    elif not uploaded_zip:
+        st.error("請上傳 ZIP 檔案！")
+    else:
+        all_dfs = []
+        
+        with st.spinner("正在處理壓縮檔並自動解密中..."):
+            try:
+                with zipfile.ZipFile(uploaded_zip) as z:
+                    for file_path in z.namelist():
+                        # 排除系統垃圾檔案與隱藏檔
+                        if file_path.endswith('.xlsx') and not file_path.split('/')[-1].startswith('._'):
+                            
+                            # 邏輯：從路徑取得資料夾名稱並抓取前六碼
+                            path_parts = file_path.split('/')
+                            password = ""
+                            if len(path_parts) > 1:
+                                folder_name = path_parts[-2] # 取得檔案所在的資料夾名
+                                password = folder_name[:6]
+                            
+                            # 讀取並嘗試解密
+                            with z.open(file_path) as f:
+                                content = f.read()
+                                decrypted_f = try_decrypt(content, password)
+                                df_piece = process_excel(decrypted_f)
+                                if df_piece is not None:
+                                    all_dfs.append(df_piece)
+            except Exception as zip_err:
+                st.error(f"讀取 ZIP 檔時出錯: {zip_err}")
+
+        if not all_dfs:
+            st.error("未找到可匹配的 Excel 檔案，請確認檔案格式（需為 .xlsx）。")
+        else:
+            final_df = pd.concat(all_dfs, ignore_index=True)
+
+            # --- 資料清洗邏輯 ---
+            # 1. 狀態過濾
+            if filter_status and "订单状态" in final_df.columns:
+                p_status = '取消|退款|退貨|不成立'
+                final_df = final_df[~final_df["订单状态"].astype(str).str.contains(p_status, na=False)]
+
+            # 2. 商品名稱過濾 (關鍵字剔除)
+            if "商品名称" in final_df.columns:
+                p_items = '|'.join(EXCLUDE_ITEMS)
+                # 修正此處括號問題
+                final_df = final_df[~final_df["商品名称"].astype(str).str.contains(p_items, na=False)]
+
+            # 3. 必填欄位檢查與重複排除
+            if "快递单号" in final_df.columns:
+                final_df = final_df.dropna(subset=["快递单号"])
+                final_df = final_df[final_df["快递单号"].astype(str).str.strip() != ""]
+            
+            if "订单编号" in final_df.columns:
+                final_df = final_df.drop_duplicates(subset=["订单编号"], keep='first')
+
+            # 4. 舊訂單排除 (350天)
+            excluded_count = 0
+            if "订单日期" in final_df.columns:
+                final_df["订单日期_dt"] = pd.to_datetime(final_df["订单日期"], errors='coerce')
+                cutoff = datetime.now() - timedelta(days=350)
+                before_len = len(final_df)
+                final_df = final_df[final_df["订单日期_dt"] >= cutoff]
+                excluded_count = before_len - len(final_df)
+
+            # --- 金額與單價計算 ---
+            final_df['買家總支付金額'] = pd.to_numeric(final_df.get('買家總支付金額', 0), errors='coerce').fillna(0)
+            final_df['數量'] = pd.to_numeric(final_df.get('數量', 1), errors='coerce').fillna(1)
+            final_df['unit_price'] = (final_df['買家總支付金額'] / final_df['數量'].replace(0, 1)).round(2)
+
+            # --- 建立輸出格式 ---
+            result_df = pd.DataFrame()
+            result_df['订单编号'] = final_df['订单编号']
+            result_df['订单日期'] = final_df['订单日期_dt'].dt.strftime('%Y-%m-%d')
+            result_df['订单币种'] = 'TWD'
+            result_df['订单金额'] = final_df['買家總支付金額']
+            result_df['商品名称'] = final_df.get('商品名称', '')
+            result_df['商品数量'] = final_df['數量']
+            result_df['商品单价'] = final_df['unit_price']
+            result_df['店铺网址'] = shop_url
+            result_df['快递单号'] = final_df.get('快递单号', '')
+            result_df['物流企业名称'] = final_df.get('物流企业名称', '')
+            result_df['电商平台英文名称'] = 'Shopee'
+
+            # 插入 Version 標頭行
+            headers = result_df.columns.tolist()
+            ver_row = ["version", "20201013"] + [""] * (len(headers) - 2)
+            final_out = [ver_row, headers] + result_df.values.tolist()
+            output_df = pd.DataFrame(final_out)
+
+            # 匯出為下載流
+            xlsx_io = io.BytesIO()
+            with pd.ExcelWriter(xlsx_io, engine='openpyxl') as writer:
+                output_df.to_excel(writer, index=False, header=False)
+            
+            st.success(f"✅ 轉換成功！總訂單筆數：{len(result_df)}，已排除舊訂單：{excluded_count} 筆。")
+            st.download_button(
+                label="📥 下載轉換後的 Excel",
+                data=xlsx_io.getvalue(),
+                file_name=f"Shopee匯出_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
