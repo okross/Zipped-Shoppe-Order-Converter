@@ -22,20 +22,13 @@ EXCLUDE_ITEMS = ["勿拍", "補拍", "補發", "直播下單", "破損鏈接", "
 # --- 功能函式 ---
 
 def try_decrypt(file_content, passwords):
-    """
-    嘗試使用多組密碼解密。
-    passwords: list of strings
-    """
-    # 移除重複值並過濾掉空字串
+    """嘗試使用多組密碼解密。"""
     pw_list = list(set([str(p).strip() for p in passwords if p]))
-    
-    # 優先嘗試「不使用密碼」
     try:
         office_file = msoffcrypto.OfficeFile(io.BytesIO(file_content))
         if not office_file.is_encrypted():
             return io.BytesIO(file_content)
         
-        # 如果有加密，依序嘗試提供的密碼
         for pw in pw_list:
             try:
                 decrypted_buffer = io.BytesIO()
@@ -44,12 +37,10 @@ def try_decrypt(file_content, passwords):
                 decrypted_buffer.seek(0)
                 return decrypted_buffer
             except Exception:
-                continue # 密碼錯誤，嘗試下一個
+                continue 
                 
     except Exception:
         pass
-    
-    # 若全部失敗，回傳原始流（交給後續讀取處理，若真有鎖則會報錯）
     return io.BytesIO(file_content)
 
 def process_excel(file_stream):
@@ -76,11 +67,26 @@ def process_excel(file_stream):
 st.set_page_config(page_title="Shopee Order Converter (ZIP)", layout="centered")
 
 st.title("📦 Shopee 訂單 ZIP 自動轉換器")
-st.markdown("""
-本系統會自動讀取 ZIP 內的 Excel 檔案：
-1. **雙重嘗試解密**：自動嘗試資料夾名稱之 **左 6 碼** 與 **右 6 碼** 作為密碼。
-2. **自動過濾**：排除退貨、取消及補拍、直播等特殊商品。
-""")
+
+# --- 新增的教學區塊 ---
+with st.expander("📖 使用教學（點擊展開）", expanded=True):
+    st.markdown("""
+    ### 🚀 處理流程
+    1.  **確認店鋪連結**：請確保欲處理的訂單報表屬於同一組店鋪網址。
+    2.  **分類整理**：將各店鋪下載的蝦皮訂單 Excel 檔案，分別放入各自的資料夾中。
+    3.  **資料夾命名規則**：資料夾名稱最後 **6 碼數字** 必須是該報表的解密密碼。
+        *   範例：`歐可 168168` 、 `尋好會 376128`
+    4.  **壓縮打包**：將這些資料夾選取後，一起點擊右鍵「壓縮為 ZIP 檔案」。
+    5.  **上傳與轉換**：在下方輸入店鋪網址並上傳該 ZIP 檔，完成後即可下載統一格式。
+    
+    ---
+    **資料夾結構示意：**
+    - `我的壓縮檔.zip`
+        - 📂 `歐可 168168` / 📄 `order_20240101.xlsx`
+        - 📂 `尋好會 376128` / 📄 `order_20240101.xlsx`
+    """)
+
+st.divider()
 
 with st.form("main_form"):
     shop_url = st.text_input("1. 請輸入店鋪網址 (必填)", placeholder="https://shopee.tw/yourshop")
@@ -100,23 +106,24 @@ if submit:
             try:
                 with zipfile.ZipFile(uploaded_zip) as z:
                     for file_path in z.namelist():
-                        if file_path.endswith('.xlsx') and not file_path.split('/')[-1].startswith('._'):
+                        # 過濾掉 Mac 系統產生的隱藏檔案或非 xlsx 檔
+                        if file_path.endswith('.xlsx') and not any(part.startswith('._') for part in file_path.split('/')):
                             
                             path_parts = file_path.split('/')
                             passwords_to_try = []
                             
+                            # 抓取檔案所在的那層資料夾名稱
                             if len(path_parts) > 1:
                                 folder_name = path_parts[-2] 
-                                # 這裡加入左6碼與右6碼
+                                # 嘗試資料夾名稱的後 6 碼 (規則 3)
                                 if len(folder_name) >= 6:
-                                    passwords_to_try.append(folder_name[:6])   # 左6
                                     passwords_to_try.append(folder_name[-6:])  # 右6
+                                    passwords_to_try.append(folder_name[:6])   # 預備：左6
                                 else:
-                                    passwords_to_try.append(folder_name)       # 長度不足則直接用原名
+                                    passwords_to_try.append(folder_name)
                             
                             with z.open(file_path) as f:
                                 content = f.read()
-                                # 呼叫新版的解密函式
                                 decrypted_f = try_decrypt(content, passwords_to_try)
                                 df_piece = process_excel(decrypted_f)
                                 if df_piece is not None:
@@ -125,7 +132,7 @@ if submit:
                 st.error(f"讀取 ZIP 檔時出錯: {zip_err}")
 
         if not all_dfs:
-            st.error("未找到可讀取的 Excel 檔案，請確認密碼是否正確或檔案是否損毀。")
+            st.error("未找到可讀取的 Excel 檔案，請確認資料夾命名是否包含正確的 6 碼密碼。")
         else:
             final_df = pd.concat(all_dfs, ignore_index=True)
 
