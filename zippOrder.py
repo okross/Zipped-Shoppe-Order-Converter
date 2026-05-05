@@ -68,22 +68,30 @@ st.set_page_config(page_title="Shopee Order Converter (ZIP)", layout="centered")
 
 st.title("📦 Shopee 訂單 ZIP 自動轉換器")
 
-# --- 新增的教學區塊 ---
-with st.expander("📖 使用教學（點擊展開）", expanded=True):
+# --- 1. 原有的系統特性說明 ---
+st.markdown("""
+本系統會自動讀取 ZIP 內的 Excel 檔案：
+1. **雙重嘗試解密**：自動嘗試資料夾名稱之 **左 6 碼** 與 **右 6 碼** 作為密碼。
+2. **自動過濾**：排除退貨、取消及補拍、直播等特殊商品。
+""")
+
+# --- 2. 新增的使用教學區塊 ---
+with st.expander("📖 具體使用教學（請點擊展開）", expanded=True):
     st.markdown("""
     ### 🚀 處理流程
-    1.  **確認店鋪連結**：請確保欲處理的訂單報表屬於同一組店鋪網址。
-    2.  **分類整理**：將各店鋪下載的蝦皮訂單 Excel 檔案，分別放入各自的資料夾中。
-    3.  **資料夾命名規則**：資料夾名稱最後 **6 碼數字** 必須是該報表的解密密碼。
+    1.  **確認店鋪連結**：確認這些訂單的店鋪網址連結可以共用。
+    2.  **分類整理**：把個別店鋪的蝦皮訂單報表，放在同一個資料夾。
+    3.  **資料夾命名**：資料夾命名為 (前面隨意名稱 後面6碼數字是訂單報表密碼)。
         *   範例：`歐可 168168` 、 `尋好會 376128`
-    4.  **壓縮打包**：將這些資料夾選取後，一起點擊右鍵「壓縮為 ZIP 檔案」。
-    5.  **上傳與轉換**：在下方輸入店鋪網址並上傳該 ZIP 檔，完成後即可下載統一格式。
+    4.  **打包壓縮**：要打包前，確保結構如上所述，並將這些資料夾一起打包成 **zip** 檔案。
+    5.  **上傳執行**：上傳 zip 檔至本系統。
+    6.  **下載結果**：下載處理過後的統一格式訂單。
     
     ---
     **資料夾結構示意：**
-    - `我的壓縮檔.zip`
-        - 📂 `歐可 168168` / 📄 `order_20240101.xlsx`
-        - 📂 `尋好會 376128` / 📄 `order_20240101.xlsx`
+    - `upload.zip` (上傳這個檔)
+        - 📂 `歐可 168168` / 📄 `報表A.xlsx`
+        - 📂 `尋好會 376128` / 📄 `報表B.xlsx`
     """)
 
 st.divider()
@@ -106,19 +114,17 @@ if submit:
             try:
                 with zipfile.ZipFile(uploaded_zip) as z:
                     for file_path in z.namelist():
-                        # 過濾掉 Mac 系統產生的隱藏檔案或非 xlsx 檔
+                        # 過濾掉 Mac 系統產生的隱藏檔案或路徑
                         if file_path.endswith('.xlsx') and not any(part.startswith('._') for part in file_path.split('/')):
                             
                             path_parts = file_path.split('/')
                             passwords_to_try = []
                             
-                            # 抓取檔案所在的那層資料夾名稱
                             if len(path_parts) > 1:
                                 folder_name = path_parts[-2] 
-                                # 嘗試資料夾名稱的後 6 碼 (規則 3)
                                 if len(folder_name) >= 6:
+                                    passwords_to_try.append(folder_name[:6])   # 左6
                                     passwords_to_try.append(folder_name[-6:])  # 右6
-                                    passwords_to_try.append(folder_name[:6])   # 預備：左6
                                 else:
                                     passwords_to_try.append(folder_name)
                             
@@ -132,7 +138,7 @@ if submit:
                 st.error(f"讀取 ZIP 檔時出錯: {zip_err}")
 
         if not all_dfs:
-            st.error("未找到可讀取的 Excel 檔案，請確認資料夾命名是否包含正確的 6 碼密碼。")
+            st.error("未找到可讀取的 Excel 檔案，請確認密碼(資料夾後6碼)是否正確。")
         else:
             final_df = pd.concat(all_dfs, ignore_index=True)
 
