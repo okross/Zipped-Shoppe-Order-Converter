@@ -71,27 +71,27 @@ st.title("📦 Shopee 訂單 ZIP 自動轉換器")
 # --- 1. 原有的系統特性說明 ---
 st.markdown("""
 本系統會自動讀取 ZIP 內的 Excel 檔案：
-1. **雙重嘗試解密**：自動嘗試資料夾名稱之 **左 6 碼** 與 **右 6 碼** 作為密碼。
+1. **雙重嘗試解密**：自動嘗試 **ZIP 檔名** 或 **內部資料夾名稱** 之 **右 6 碼** 與 **左 6 碼** 作為密碼。
 2. **自動過濾**：排除退貨、取消及補拍、直播等特殊商品。
 """)
 
-# --- 2. 新增的使用教學區塊 ---
+# --- 2. 使用教學區塊 ---
 with st.expander("📖 具體使用教學（請點擊展開）", expanded=True):
     st.markdown("""
-    ### 🚀 處理流程
-    1.  **確認店鋪連結**：確認這些訂單的店鋪網址連結可以共用。
-    2.  **分類整理**：把個別店鋪的蝦皮訂單報表，放在同一個資料夾。
-    3.  **資料夾命名**：資料夾命名為 (前面隨意名稱 後面6碼數字是訂單報表密碼)。
-        *   範例：`歐可 168168` 、 `尋好會 376128`
-    4.  **打包壓縮**：要打包前，確保結構如上所述，並將這些資料夾一起打包成 **zip** 檔案。
-    5.  **上傳執行**：上傳 zip 檔至本系統。
-    6.  **下載結果**：下載處理過後的統一格式訂單。
+    ### 🚀 支援兩種打包方式：
     
-    ---
-    **資料夾結構示意：**
-    - `upload.zip` (上傳這個檔)
+    **方式 A：ZIP 內包資料夾**
+    - `upload.zip`
         - 📂 `歐可 168168` / 📄 `報表A.xlsx`
         - 📂 `尋好會 376128` / 📄 `報表B.xlsx`
+    *(系統會自動抓取 `歐可 168168` 與 `尋好會 376128` 內的密碼)*
+
+    ---
+
+    **方式 B：直接壓縮 Excel（檔名帶密碼）**
+    - 📦 `歐可 168168.zip`
+        - 📄 `報表A.xlsx`
+    *(系統會自動抓取 ZIP 檔名 `歐可 168168` 內的密碼)*
     """)
 
 st.divider()
@@ -110,35 +110,50 @@ if submit:
     else:
         all_dfs = []
         
-        with st.spinner("正在解析壓縮檔並多重嘗試解密中..."):
+        # 取得 ZIP 檔案本身的名稱（去掉 .zip 副檔名）
+        zip_base_name = uploaded_zip.name.rsplit('.', 1)[0]
+        
+        with st.spinner("正在解析壓縮檔並嘗試解密中..."):
             try:
                 with zipfile.ZipFile(uploaded_zip) as z:
                     for file_path in z.namelist():
-                        # 過濾掉 Mac 系統產生的隱藏檔案或路徑
+                        # 過濾掉 Mac 系統產生的隱藏檔案與資料夾本身
                         if file_path.endswith('.xlsx') and not any(part.startswith('._') for part in file_path.split('/')):
                             
-                            path_parts = file_path.split('/')
+                            # 拆分路徑，只取非空的路徑片段
+                            path_parts = [p for p in file_path.split('/') if p]
                             passwords_to_try = []
                             
-                            if len(path_parts) > 1:
-                                folder_name = path_parts[-2] 
-                                if len(folder_name) >= 6:
-                                    passwords_to_try.append(folder_name[:6])   # 左6
-                                    passwords_to_try.append(folder_name[-6:])  # 右6
-                                else:
-                                    passwords_to_try.append(folder_name)
+                            # --- 嚴格兩層判斷邏輯 ---
+                            if len(path_parts) == 1:
+                                # 案例二：ZIP 內直接是 Excel 檔（沒有資料夾），套用 ZIP 本身檔名
+                                target_name = zip_base_name
+                            else:
+                                # 案例一：ZIP 內有資料夾，套用第一層資料夾名稱
+                                target_name = path_parts[0]
                             
+                            # 提取密碼策略：完整名稱 / 後 6 碼 / 前 6 碼
+                            passwords_to_try.append(target_name)
+                            if len(target_name) >= 6:
+                                passwords_to_try.append(target_name[-6:]) # 右 6 碼
+                                passwords_to_try.append(target_name[:6])  # 左 6 碼
+                            
+                            # 去重複並排除空白
+                            passwords_to_try = list(set([p.strip() for p in passwords_to_try if p.strip()]))
+                            
+                            # 讀取檔並嘗試解密
                             with z.open(file_path) as f:
                                 content = f.read()
                                 decrypted_f = try_decrypt(content, passwords_to_try)
                                 df_piece = process_excel(decrypted_f)
                                 if df_piece is not None:
                                     all_dfs.append(df_piece)
+                                    
             except Exception as zip_err:
                 st.error(f"讀取 ZIP 檔時出錯: {zip_err}")
 
         if not all_dfs:
-            st.error("未找到可讀取的 Excel 檔案，請確認密碼(資料夾後6碼)是否正確。")
+            st.error("未找到可讀取的 Excel 檔案，請確認密碼（資料夾或 ZIP 檔名後6碼）是否正確。")
         else:
             final_df = pd.concat(all_dfs, ignore_index=True)
 
@@ -158,7 +173,7 @@ if submit:
             if "订单编号" in final_df.columns:
                 final_df = final_df.drop_duplicates(subset=["订单编号"], keep='first')
 
-            # 4. 舊訂單排除 (350天)
+            # 舊訂單排除 (350天)
             excluded_count = 0
             if "订单日期" in final_df.columns:
                 final_df["订单日期_dt"] = pd.to_datetime(final_df["订单日期"], errors='coerce')
