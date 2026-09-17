@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import io
+import re
 import zipfile
 import msoffcrypto
 from datetime import datetime, timedelta
@@ -19,7 +20,47 @@ COLUMN_MAPPING = {
 
 EXCLUDE_ITEMS = ["勿拍", "補拍", "補發", "直播下單", "破損鏈接", "破損鏈結", "售後鏈接", "售後鏈結", "直播台", "直播"]
 
+# 店名與手機末六碼之間可接受的分隔符號（半形/全形空格、底線、連字號）
+SEPARATOR_PATTERN = r"[\s_\-　＿－‐-―]+"
+
 # --- 功能函式 ---
+
+def extract_passwords(name):
+    """從資料夾／ZIP 檔名推導出所有可能的密碼。
+
+    支援 "店名 168168"、"店名_168168"、"店名-168168" 等格式，
+    分隔符號可為空格、底線、連字號（含全形）。
+    """
+    name = str(name or "").strip()
+    if not name:
+        return []
+
+    candidates = [name]
+
+    # 1. 以分隔符號切開，每個片段本身都可能是密碼（例如末六碼那一段）
+    tokens = [t for t in re.split(SEPARATOR_PATTERN, name) if t]
+    candidates.extend(tokens)
+
+    # 2. 直接抓出名稱中所有 6 碼數字（手機末六碼）
+    candidates.extend(re.findall(r"\d{6}", name))
+
+    # 3. 保留原本的左右 6 碼策略：整個名稱 + 去掉分隔符後的名稱 + 各片段
+    stripped = re.sub(SEPARATOR_PATTERN, "", name)
+    for base in [name, stripped] + tokens:
+        if len(base) >= 6:
+            candidates.append(base[-6:])  # 右 6 碼
+            candidates.append(base[:6])   # 左 6 碼
+
+    # 去重複並排除空白（保留先後順序）
+    seen = set()
+    result = []
+    for c in candidates:
+        c = str(c).strip()
+        if c and c not in seen:
+            seen.add(c)
+            result.append(c)
+    return result
+
 
 def try_decrypt(file_content, passwords):
     """嘗試使用多組密碼解密。"""
@@ -71,7 +112,7 @@ st.title("📦 Shopee 訂單 ZIP 自動轉換器")
 # --- 1. 原有的系統特性說明 ---
 st.markdown("""
 本系統會自動讀取 ZIP 內的 Excel 檔案：
-1. **雙重嘗試解密**：自動嘗試 **ZIP 檔名** 或 **內部資料夾名稱** 之 **右 6 碼** 與 **左 6 碼** 作為密碼。
+1. **多重嘗試解密**：自動從 **ZIP 檔名** 或 **內部資料夾名稱** 取出密碼，支援 `店名 168168`、`店名_168168`、`店名-168168`（空格／底線／連字號皆可），並同時嘗試 **右 6 碼** 與 **左 6 碼**。
 2. **自動過濾**：排除退貨、取消及補拍、直播等特殊商品。
 """)
 
@@ -83,15 +124,22 @@ with st.expander("📖 具體使用教學（請點擊展開）", expanded=True):
     **方式 A：ZIP 內包資料夾**
     - `upload.zip`
         - 📂 `歐可 168168` / 📄 `報表A.xlsx`
-        - 📂 `尋好會 376128` / 📄 `報表B.xlsx`
-    *(系統會自動抓取 `歐可 168168` 與 `尋好會 376128` 內的密碼)*
+        - 📂 `尋好會_376128` / 📄 `報表B.xlsx`
+        - 📂 `好厝邊-241503` / 📄 `報表C.xlsx`
+    *(系統會自動抓取資料夾名稱中的手機末六碼)*
 
     ---
 
     **方式 B：直接壓縮 Excel（檔名帶密碼）**
-    - 📦 `歐可 168168.zip`
+    - 📦 `歐可 168168.zip` / 📦 `歐可_168168.zip` / 📦 `歐可-168168.zip`
         - 📄 `報表A.xlsx`
-    *(系統會自動抓取 ZIP 檔名 `歐可 168168` 內的密碼)*
+    *(系統會自動抓取 ZIP 檔名中的手機末六碼)*
+
+    ---
+
+    ### 🔑 檔名格式說明
+    店名與手機末六碼之間的分隔符號可使用 **空格**、**底線 `_`** 或 **連字號 `-`**（全形亦可），
+    例如 `歐可 168168`、`歐可_168168`、`歐可-168168` 都會被正確解析。
     """)
 
 st.divider()
@@ -122,7 +170,6 @@ if submit:
                             
                             # 拆分路徑，只取非空的路徑片段
                             path_parts = [p for p in file_path.split('/') if p]
-                            passwords_to_try = []
                             
                             # --- 嚴格兩層判斷邏輯 ---
                             if len(path_parts) == 1:
@@ -132,14 +179,9 @@ if submit:
                                 # 案例一：ZIP 內有資料夾，套用第一層資料夾名稱
                                 target_name = path_parts[0]
                             
-                            # 提取密碼策略：完整名稱 / 後 6 碼 / 前 6 碼
-                            passwords_to_try.append(target_name)
-                            if len(target_name) >= 6:
-                                passwords_to_try.append(target_name[-6:]) # 右 6 碼
-                                passwords_to_try.append(target_name[:6])  # 左 6 碼
-                            
-                            # 去重複並排除空白
-                            passwords_to_try = list(set([p.strip() for p in passwords_to_try if p.strip()]))
+                            # 提取密碼策略：完整名稱 / 分隔後片段 / 6 碼數字 / 左右 6 碼
+                            # 分隔符號支援空格、底線 "_"、連字號 "-"
+                            passwords_to_try = extract_passwords(target_name)
                             
                             # 讀取檔並嘗試解密
                             with z.open(file_path) as f:
@@ -153,7 +195,7 @@ if submit:
                 st.error(f"讀取 ZIP 檔時出錯: {zip_err}")
 
         if not all_dfs:
-            st.error("未找到可讀取的 Excel 檔案，請確認密碼（資料夾或 ZIP 檔名後6碼）是否正確。")
+            st.error("未找到可讀取的 Excel 檔案，請確認資料夾或 ZIP 檔名格式（例：店名 168168 / 店名_168168 / 店名-168168）是否正確。")
         else:
             final_df = pd.concat(all_dfs, ignore_index=True)
 
