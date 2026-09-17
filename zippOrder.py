@@ -20,6 +20,9 @@ COLUMN_MAPPING = {
 
 EXCLUDE_ITEMS = ["勿拍", "補拍", "補發", "直播下單", "破損鏈接", "破損鏈結", "售後鏈接", "售後鏈結", "直播台", "直播"]
 
+# 人民幣匯率預設值（1 CNY = ? TWD）
+DEFAULT_CNY_RATE = 4.75
+
 # 店名與手機末六碼之間可接受的分隔符號（半形/全形空格、底線、連字號）
 SEPARATOR_PATTERN = r"[\s_\-　＿－‐-―]+"
 
@@ -147,7 +150,15 @@ st.divider()
 with st.form("main_form"):
     shop_url = st.text_input("1. 請輸入店鋪網址 (必填)", placeholder="https://shopee.tw/yourshop")
     filter_status = st.checkbox("2. 自動排除退貨/取消訂單", value=True)
-    uploaded_zip = st.file_uploader("3. 上傳 ZIP 壓縮檔", type=["zip"])
+    cny_rate = st.number_input(
+        "3. 人民幣匯率（1 CNY = ? TWD）",
+        min_value=0.0001,
+        value=DEFAULT_CNY_RATE,
+        step=0.01,
+        format="%.4f",
+        help="台幣總額會除以此匯率換算成人民幣，預設 4.75。"
+    )
+    uploaded_zip = st.file_uploader("4. 上傳 ZIP 壓縮檔", type=["zip"])
     submit = st.form_submit_button("執行轉換")
 
 if submit:
@@ -253,6 +264,25 @@ if submit:
                 output_df.to_excel(writer, index=False, header=False)
             
             st.success(f"✅ 轉換成功！總筆數：{len(result_df)}，已排除過舊訂單：{excluded_count} 筆。")
+
+            # --- 統計摘要 ---
+            total_orders = len(result_df)
+            total_twd = float(result_df['订单金额'].sum())
+            total_qty = int(final_df['數量'].sum())
+            total_cny = total_twd / cny_rate if cny_rate else 0.0
+
+            st.subheader("📊 統計摘要")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("訂單總筆數", f"{total_orders:,} 筆")
+            c2.metric("台幣總金額 (TWD)", f"NT$ {total_twd:,.2f}")
+            c3.metric("人民幣總金額 (CNY)", f"¥ {total_cny:,.2f}", help=f"匯率 1 CNY = {cny_rate:,.4f} TWD")
+
+            st.caption(
+                f"商品總件數：{total_qty:,} 件　|　平均客單價：NT$ "
+                f"{(total_twd / total_orders if total_orders else 0):,.2f}　|　"
+                f"換算匯率：1 CNY = {cny_rate:,.4f} TWD"
+            )
+
             st.download_button(
                 label="📥 下載轉換後的 Excel",
                 data=xlsx_io.getvalue(),
